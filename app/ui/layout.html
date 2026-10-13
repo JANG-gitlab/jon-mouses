@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jon Mouse's</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100vh;
+  }
+  header, footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px;
+  }
+  footer { border-top: 1px solid var(--line); flex-wrap: wrap; align-items: flex-start; }
+  #stage {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--bg);
+    background-image: radial-gradient(var(--dot) 1px, transparent 1.2px);
+    background-size: 18px 18px;
+    border-top: 1px solid var(--line);
+    touch-action: none;
+  }
+  .screen {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: grid;
+    place-content: center;
+    gap: 2px;
+    padding: 6px;
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    text-align: center;
+    overflow: hidden;
+    transition: transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1.25), width 200ms ease, height 200ms ease, border-color 120ms ease;
+  }
+  .screen > * { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .screen strong { font-size: 13px; font-weight: 600; }
+  .screen span { font-size: 12px; color: var(--muted); }
+  .screen.own { border-color: var(--text); }
+  .screen.peer { cursor: grab; }
+  .screen.peer:hover, .screen.selected { border-color: var(--accent); }
+  .screen.unknown { border-style: dashed; }
+  .screen.offline { opacity: 0.6; }
+  .screen.dragging { cursor: grabbing; transition: none; z-index: 2; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18); }
+  .edge {
+    position: absolute;
+    top: 0;
+    left: 0;
+    border-radius: 3px;
+    background: var(--accent);
+    opacity: 0.55;
+    pointer-events: none;
+    transition: transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1.25), width 200ms ease, height 200ms ease, opacity 120ms ease;
+  }
+  .edge.lit { opacity: 1; }
+  .edge.hidden { opacity: 0; }
+  #details { display: grid; gap: 10px; min-width: 260px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row label { color: var(--muted); }
+  input[type="number"] { width: 84px; padding: 6px 8px; font-variant-numeric: tabular-nums; }
+  #hint { max-width: 300px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <button id="identify" type="button"></button>
+</header>
+<div id="stage" role="group"></div>
+<footer>
+  <section id="details" aria-live="polite"></section>
+  <p id="hint"></p>
+</footer>
+<script>
+  const french = navigator.language.toLowerCase().startsWith("fr");
+  document.documentElement.lang = french ? "fr" : "en";
+  const number = new Intl.NumberFormat(french ? "fr-FR" : "en-US", { maximumFractionDigits: 1 });
+  const sideNames = french
+    ? { left: "à gauche", right: "à droite", top: "au-dessus", bottom: "en dessous" }
+    : { left: "on the left", right: "on the right", top: "above", bottom: "below" };
+  const texts = french
+    ? {
+        title: "Disposition des écrans",
+        identify: "Identifier les écrans",
+        stage: "Bureau. Chaque écran est à sa taille réelle.",
+        hint: "Place les écrans comme sur ton bureau. Le curseur passe seulement là où les bords se touchent, en orange.",
+        thisComputer: "cet ordinateur",
+        offline: "hors ligne",
+        unknownSize: "taille inconnue",
+        diagonal: "Diagonale (pouces)",
+        reset: "Taille détectée",
+        side: "Position",
+        needsOnline: "Connecte cet appareil pour modifier sa taille.",
+        peerLabel: (name, side, offset) => `${name}, ${side}, décalé de ${offset} cm. Flèches pour le décaler le long du bord, Maj pour aller plus finement.`,
+      }
+    : {
+        title: "Screen layout",
+        identify: "Identify screens",
+        stage: "Desk. Every screen is shown at its real size.",
+        hint: "Arrange the screens like they sit on your desk. The cursor only crosses where edges touch, in orange.",
+        thisComputer: "this computer",
+        offline: "offline",
+        unknownSize: "unknown size",
+        diagonal: "Diagonal (inches)",
+        reset: "Detected size",
+        side: "Position",
+        needsOnline: "Connect this device to change its size.",
+        peerLabel: (name, side, offset) => `${name}, ${side}, offset by ${offset} cm. Arrow keys slide it along the edge, Shift for finer steps.`,
+      };
+
+  const { core, event } = window.__TAURI__;
+  const GAP_MM = 8;
+  const MIN_OVERLAP_MM = 20;
+  const FALLBACK_SIZE = { w: 340, h: 200 };
+  const PADDING_PX = 36;
+  const MM_PER_INCH = 25.4;
+
+  const stage = document.getElementById("stage");
+  const details = document.getElementById("details");
+  document.getElementById("title").textContent = texts.title;
+  document.getElementById("hint").textContent = texts.hint;
+  stage.setAttribute("aria-label", texts.stage);
+  const identifyButton = document.getElementById("identify");
+  identifyButton.textContent = texts.identify;
+  identifyButton.addEventListener("click", () => core.invoke("identify_screens"));
+
+  let state = null;
+  let selected = null;
+  let drag = null;
+  let reloadAfterDrag = false;
+  let view = { scale: 1, x: 0, y: 0 };
+  const nodes = new Map();
+
+  const element = (tag, props = {}, children = []) => {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  };
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const isAcross = (side) => side === "left" || side === "right";
+  const sizeOf = (screen) => (screen ? { w: screen.width_mm, h: screen.height_mm } : FALLBACK_SIZE);
+  const inches = (screen) => Math.hypot(screen.width_mm, screen.height_mm) / MM_PER_INCH;
+  const describe = (screen) =>
+    screen
+      ? `${number.format(inches(screen))}″ · ${number.format(screen.width_mm / 10)} × ${number.format(screen.height_mm / 10)} cm`
+      : texts.unknownSize;
+
+  function placement(peer) {
+    const own = sizeOf(state.me.screen);
+    const { w, h } = sizeOf(peer.screen);
+    const offset = peer.offsetMm;
+    switch (peer.side) {
+      case "left": return { x: -w - GAP_MM, y: offset, w, h };
+      case "right": return { x: own.w + GAP_MM, y: offset, w, h };
+      case "top": return { x: offset, y: -h - GAP_MM, w, h };
+      default: return { x: offset, y: own.h + GAP_MM, w, h };
+    }
+  }
+
+  function snap(peer, x, y) {
+    const own = sizeOf(state.me.screen);
+    const { w, h } = sizeOf(peer.screen);
+    const across = (x + w / 2 - own.w / 2) / ((own.w + w) / 2);
+    const down = (y + h / 2 - own.h / 2) / ((own.h + h) / 2);
+    const side = Math.abs(across) >= Math.abs(down) ? (across > 0 ? "right" : "left") : (down > 0 ? "bottom" : "top");
+    const offset = isAcross(side)
+      ? clamp(y, MIN_OVERLAP_MM - h, own.h - MIN_OVERLAP_MM)
+      : clamp(x, MIN_OVERLAP_MM - w, own.w - MIN_OVERLAP_MM);
+    return { side, offsetMm: Math.round(offset) };
+  }
+
+  function overlap(peer, rect) {
+    const own = sizeOf(state.me.screen);
+    const across = isAcross(peer.side);
+    const start = Math.max(0, across ? rect.y : rect.x);
+    const end = Math.min(across ? own.h : own.w, across ? rect.y + rect.h : rect.x + rect.w);
+    if (end <= start) return [];
+    const thickness = 4 / view.scale;
+    const ownEdge = { left: -thickness / 2, right: own.w - thickness / 2, top: -thickness / 2, bottom: own.h - thickness / 2 }[peer.side];
+    const peerEdge = { left: rect.x + rect.w - thickness / 2, right: rect.x - thickness / 2, top: rect.y + rect.h - thickness / 2, bottom: rect.y - thickness / 2 }[peer.side];
+    return [ownEdge, peerEdge].map((edge) =>
+      across ? { x: edge, y: start, w: thickness, h: end - start } : { x: start, y: edge, w: end - start, h: thickness },
+    );
+  }
+
+  function fit(rects) {
+    const left = Math.min(...rects.map((r) => r.x));
+    const top = Math.min(...rects.map((r) => r.y));
+    const right = Math.max(...rects.map((r) => r.x + r.w));
+    const bottom = Math.max(...rects.map((r) => r.y + r.h));
+    const scale = Math.min(
+      (stage.clientWidth - PADDING_PX * 2) / (right - left),
+      (stage.clientHeight - PADDING_PX * 2) / (bottom - top),
+      2.5,
+    );
+    return {
+      scale,
+      x: (stage.clientWidth - (right - left) * scale) / 2 - left * scale,
+      y: (stage.clientHeight - (bottom - top) * scale) / 2 - top * scale,
+    };
+  }
+
+  function position(node, rect) {
+    node.style.transform = `translate(${view.x + rect.x * view.scale}px, ${view.y + rect.y * view.scale}px)`;
+    node.style.width = `${rect.w * view.scale}px`;
+    node.style.height = `${rect.h * view.scale}px`;
+  }
+
+  function node(id, build) {
+    if (!nodes.has(id)) {
+      const created = build();
+      nodes.set(id, created);
+      stage.append(created);
+    }
+    return nodes.get(id);
+  }
+
+  function render() {
+    if (!state) return;
+    const own = sizeOf(state.me.screen);
+    const ownRect = { x: 0, y: 0, ...own };
+    const rects = new Map(state.peers.map((peer) => [peer.key, drag?.peer === peer ? drag.rect : placement(peer)]));
+    if (!drag) view = fit([ownRect, ...rects.values()]);
+
+    const alive = new Set(["me"]);
+    const me = node("me", () => {
+      const created = element("div", { className: "screen own", tabIndex: 0 });
+      created.addEventListener("click", () => select(null));
+      created.addEventListener("keydown", (pressed) => pressed.key === "Enter" && select(null));
+      return created;
+    });
+    me.replaceChildren(element("strong", { textContent: state.me.name }), element("span", { textContent: texts.thisComputer }), element("span", { textContent: describe(state.me.screen) }));
+    me.classList.toggle("selected", selected === null);
+    me.setAttribute("aria-label", `${state.me.name}, ${texts.thisComputer}, ${describe(state.me.screen)}`);
+    position(me, ownRect);
+
+    for (const peer of state.peers) {
+      const rect = rects.get(peer.key);
+      alive.add(peer.key);
+      const screen = node(peer.key, () => buildPeer(peer.key));
+      screen.className = "screen peer";
+      screen.classList.toggle("unknown", !peer.screen);
+      screen.classList.toggle("offline", !peer.online);
+      screen.classList.toggle("selected", selected === peer.key);
+      screen.classList.toggle("dragging", drag?.peer === peer);
+      const status = peer.online ? describe(peer.screen) : texts.offline;
+      screen.replaceChildren(element("strong", { textContent: peer.name }), element("span", { textContent: status }));
+      screen.setAttribute("aria-label", texts.peerLabel(peer.name, sideNames[peer.side], number.format(peer.offsetMm / 10)));
+      position(screen, rect);
+
+      const segments = drag?.peer === peer ? [] : overlap(peer, rect);
+      ["own", "peer"].forEach((which, index) => {
+        const id = `${peer.key}-${which}`;
+        alive.add(id);
+        const edge = node(id, () => element("div", { className: "edge" }));
+        edge.classList.toggle("hidden", !segments[index]);
+        edge.classList.toggle("lit", selected === peer.key || screen.matches(":hover"));
+        if (segments[index]) position(edge, segments[index]);
+      });
+    }
+
+    for (const [id, stale] of nodes) {
+      if (!alive.has(id)) {
+        stale.remove();
+        nodes.delete(id);
+      }
+    }
+    renderDetails();
+  }
+
+  function buildPeer(key) {
+    const screen = element("div", { tabIndex: 0, role: "button" });
+    const peerOf = () => state.peers.find((peer) => peer.key === key);
+    screen.addEventListener("pointerenter", render);
+    screen.addEventListener("pointerleave", render);
+    screen.addEventListener("pointerdown", (pressed) => {
+      const peer = peerOf();
+      screen.setPointerCapture(pressed.pointerId);
+      drag = { peer, startX: pressed.clientX, startY: pressed.clientY, origin: placement(peer), rect: placement(peer), moved: false };
+      select(key);
+    });
+    screen.addEventListener("pointermove", (moved) => {
+      if (!drag || drag.peer !== peerOf()) return;
+      const dx = (moved.clientX - drag.startX) / view.scale;
+      const dy = (moved.clientY - drag.startY) / view.scale;
+      drag.moved ||= Math.hypot(dx, dy) * view.scale > 3;
+      drag.rect = { ...drag.origin, x: drag.origin.x + dx, y: drag.origin.y + dy };
+      render();
+    });
+    const drop = () => {
+      if (!drag) return;
+      const { peer, rect, moved } = drag;
+      drag = null;
+      if (moved) commit(peer, snap(peer, rect.x, rect.y));
+      if (reloadAfterDrag) load();
+      render();
+    };
+    screen.addEventListener("pointerup", drop);
+    screen.addEventListener("pointercancel", drop);
+    screen.addEventListener("keydown", (pressed) => {
+      const peer = peerOf();
+      const step = pressed.shiftKey ? 1 : 10;
+      const along = isAcross(peer.side)
+        ? { ArrowUp: -step, ArrowDown: step }[pressed.key]
+        : { ArrowLeft: -step, ArrowRight: step }[pressed.key];
+      if (pressed.key === "Enter" || pressed.key === " ") select(key);
+      if (along === undefined) return;
+      pressed.preventDefault();
+      const rect = placement(peer);
+      const moved = isAcross(peer.side) ? snap(peer, rect.x, rect.y + along) : snap(peer, rect.x + along, rect.y);
+      commit(peer, { side: peer.side, offsetMm: moved.offsetMm });
+    });
+    return screen;
+  }
+
+  function commit(peer, { side, offsetMm }) {
+    peer.side = side;
+    peer.offsetMm = offsetMm;
+    core.invoke("arrange", { key: peer.key, side, offsetMm });
+    render();
+  }
+
+  function select(key) {
+    selected = key;
+    render();
+  }
+
+  function resizeTo(peer, screen, diagonalInches) {
+    const ratio = screen.width_px / screen.height_px;
+    const height = (diagonalInches * MM_PER_INCH) / Math.hypot(ratio, 1);
+    core.invoke("resize", { key: peer?.key ?? null, sizeMm: [height * ratio, height] });
+  }
+
+  let detailsKey;
+  function renderDetails() {
+    const peer = state.peers.find((known) => known.key === selected) ?? null;
+    const screen = peer ? peer.screen : state.me.screen;
+    const key = JSON.stringify([selected, screen, peer?.side, peer?.online]);
+    if (key === detailsKey || details.contains(document.activeElement)) return;
+    detailsKey = key;
+
+    const editable = Boolean(screen) && (!peer || peer.online);
+    const diagonal = element("input", {
+      id: "diagonal",
+      type: "number",
+      min: 5,
+      max: 100,
+      step: 0.1,
+      disabled: !editable,
+      value: screen ? inches(screen).toFixed(1) : "",
+    });
+    diagonal.addEventListener("change", () => {
+      const value = parseFloat(diagonal.value);
+      if (value >= 5 && value <= 100) resizeTo(peer, screen, value);
+    });
+    const reset = element("button", { type: "button", textContent: texts.reset, disabled: !editable });
+    reset.addEventListener("click", () => core.invoke("resize", { key: peer?.key ?? null, sizeMm: null }));
+
+    const rows = [
+      element("h2", { textContent: peer ? peer.name : `${state.me.name} (${texts.thisComputer})` }),
+      element("div", { className: "row" }, [element("label", { htmlFor: "diagonal", textContent: texts.diagonal }), diagonal, reset]),
+    ];
+    if (peer && !peer.online) rows.push(element("p", { textContent: texts.needsOnline }));
+    if (peer) {
+      const sides = element("div", { className: "row", role: "radiogroup", ariaLabel: texts.side }, [
+        element("span", { textContent: texts.side }),
+      ]);
+      for (const side of ["left", "right", "top", "bottom"]) {
+        const choice = element("button", { type: "button", role: "radio", textContent: sideNames[side] });
+        choice.setAttribute("aria-checked", String(peer.side === side));
+        choice.setAttribute("aria-pressed", String(peer.side === side));
+        choice.addEventListener("click", () => commit(peer, { side, offsetMm: 0 }));
+        sides.append(choice);
+      }
+      rows.push(sides);
+    }
+    details.replaceChildren(...rows);
+  }
+
+  async function load() {
+    if (drag) {
+      reloadAfterDrag = true;
+      return;
+    }
+    reloadAfterDrag = false;
+    state = await core.invoke("layout_state");
+    if (selected && !state.peers.some((peer) => peer.key === selected)) selected = null;
+    detailsKey = undefined;
+    render();
+  }
+
+  event.listen("layout-changed", load);
+  new ResizeObserver(render).observe(stage);
+  load();
+</script>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jon Mouse's</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  body { display: grid; place-items: center; padding: 24px; }
+  main { width: 100%; display: grid; gap: 16px; text-align: center; }
+  .code {
+    font: 600 44px/1 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.12em;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  form { display: grid; gap: 12px; }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    font: 600 28px/1.2 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.3em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .actions { display: flex; gap: 8px; justify-content: center; }
+  [role="status"]:empty { display: none; }
+  .failed { color: var(--danger); }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+  const french = navigator.language.toLowerCase().startsWith("fr");
+  const texts = french
+    ? {
+        showTitle: (name) => `${name} veut s'associer`,
+        showHint: (name) => `Tape ce code sur ${name}.`,
+        askTitle: (name) => `Associer ${name}`,
+        askHint: (name) => `Tape le code affiché sur ${name}.`,
+        label: "Code à 6 chiffres",
+        confirm: "Associer",
+        cancel: "Annuler",
+        checking: "Vérification…",
+        failed: "Le code ne correspond pas. Recommence depuis le menu.",
+      }
+    : {
+        showTitle: (name) => `${name} wants to pair`,
+        showHint: (name) => `Type this code on ${name}.`,
+        askTitle: (name) => `Pair ${name}`,
+        askHint: (name) => `Type the code shown on ${name}.`,
+        label: "6-digit code",
+        confirm: "Pair",
+        cancel: "Cancel",
+        checking: "Checking…",
+        failed: "The code did not match. Start again from the menu.",
+      };
+  document.documentElement.lang = french ? "fr" : "en";
+
+  const { core, event } = window.__TAURI__;
+  const { mode, code = "", name = "" } = window.pairing ?? {};
+  const app = document.getElementById("app");
+
+  const element = (tag, props = {}, children = []) => {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  };
+
+  const status = element("p", { role: "status" });
+  const cancel = element("button", { type: "button", textContent: texts.cancel });
+  cancel.addEventListener("click", () => core.invoke("cancel_pairing"));
+
+  if (mode === "show") {
+    app.append(
+      element("h1", { textContent: texts.showTitle(name) }),
+      element("p", { className: "code", textContent: `${code.slice(0, 3)} ${code.slice(3)}`, ariaLabel: code.split("").join(" ") }),
+      element("p", { textContent: texts.showHint(name) }),
+      status,
+      element("div", { className: "actions" }, [cancel]),
+    );
+  } else {
+    const input = element("input", {
+      id: "code",
+      inputMode: "numeric",
+      autocomplete: "one-time-code",
+      maxLength: 6,
+      pattern: "[0-9]{6}",
+      required: true,
+      ariaDescribedBy: "hint",
+    });
+    const submit = element("button", { type: "submit", className: "primary", textContent: texts.confirm });
+    const form = element("form", {}, [
+      element("label", { htmlFor: "code", textContent: texts.label, className: "visually-hidden" }),
+      input,
+      element("div", { className: "actions" }, [cancel, submit]),
+    ]);
+    input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, "").slice(0, 6); });
+    form.addEventListener("submit", (submitted) => {
+      submitted.preventDefault();
+      input.disabled = submit.disabled = true;
+      status.textContent = texts.checking;
+      core.invoke("submit_code", { code: input.value });
+    });
+    app.append(
+      element("h1", { textContent: texts.askTitle(name) }),
+      element("p", { id: "hint", textContent: texts.askHint(name) }),
+      form,
+      status,
+    );
+    input.focus();
+  }
+
+  event.listen("pairing-failed", () => {
+    status.className = "failed";
+    status.textContent = texts.failed;
+  });
+</script>
+</body>
+</html>

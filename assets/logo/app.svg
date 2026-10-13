@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#FF5A36"/>
+  <g transform="translate(212 192) scale(25)" fill="#fff">
+    <defs>
+      <mask id="oreilles">
+        <rect width="24" height="24" fill="#fff"/>
+        <rect x="5.4" y="4.4" width="13.2" height="15.2" rx="6.6" fill="#000"/>
+      </mask>
+      <mask id="bouton">
+        <rect width="24" height="24" fill="#fff"/>
+        <path d="M12 4v5.5" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>
+      </mask>
+    </defs>
+    <g mask="url(#oreilles)">
+      <circle cx="6.6" cy="5.6" r="3.1"/>
+      <circle cx="17.4" cy="5.6" r="3.1"/>
+    </g>
+    <rect x="6.5" y="5.5" width="11" height="13" rx="5.5" mask="url(#bouton)"/>
+    <path d="M12 18.5c0 2.6 3.2 3.6 5.6 1.9" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+</svg>

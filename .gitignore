@@ -1,0 +1,5 @@
+target/
+dist/
+app/gen/
+._*
+.DS_Store

@@ -1,0 +1,39 @@
+[package]
+name = "jon-mouses"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+input-capture = { version = "0.4", default-features = false }
+input-event = "0.4"
+tokio = { version = "1", features = ["rt", "time", "macros", "net", "io-util", "sync"] }
+futures = "0.3"
+sys-locale = "0.3"
+lan-mouse-proto = "0.3"
+snow = "0.10.0"
+spake2 = "0.4.0"
+mdns-sd = "0.21.5"
+hex = { version = "0.4.3", features = ["serde"] }
+serde_json = "1.0.154"
+gethostname = "1.1.0"
+rand = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
+input-emulation = { version = "0.4", default-features = false }
+arboard = "3"
+png = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.25.0"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[patch.crates-io]
+input-capture = { path = "../vendor/input-capture" }
+input-emulation = { path = "../vendor/input-emulation" }

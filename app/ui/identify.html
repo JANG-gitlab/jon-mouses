@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jon Mouse's</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  body {
+    display: grid;
+    place-items: center;
+    background: var(--accent);
+    color: var(--accent-text);
+    font: 700 220px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  p { color: inherit; }
+</style>
+</head>
+<body>
+<p id="number"></p>
+<script>
+  document.getElementById("number").textContent = window.screenNumber ?? "";
+</script>
+</body>
+</html>
